@@ -1,0 +1,217 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include <GL/glut.h>
+
+#define N_PROGRAMS 1000
+#define TAPE_SIZE 16
+#define DATA_SIZE 16
+
+uint64_t state64 = 0xDEADBEEFDEADBEEFull;
+
+typedef struct {
+    uint8_t tape[TAPE_SIZE];     // Bytecode instructions
+    uint8_t data[DATA_SIZE];     // Data memory
+    uint8_t dp;                  // Data pointer (0–15)
+    uint8_t ip;                  // Instruction pointer (0–15)
+    int halted;                  // Flag to stop execution
+} BFFInterpreter;
+
+uint64_t xorshift64() {
+    state64 ^= state64 >> 12;
+    state64 ^= state64 << 25;
+    state64 ^= state64 >> 27;
+    return state64 * 2685821657736338717ull;
+}
+
+void GenerateRandomData(uint64_t *arr, int count, uint64_t seed) {
+    state64 = seed;
+    for (int i = 0; i < count; i++) {
+        arr[i] = xorshift64();
+    }
+}
+
+
+
+const char *mnemonics[16] = {
+    "NOP", "INC", "DEC", "MOVR", "MOVL", "ADD", "SUB", "JZ",
+    "JNZ", "OUT", "IN", "RND", "CLR", "SWP", "CPY", "HALT"
+};
+
+void RenderBitmapString(float x, float y, void *font, const char *string) {
+    glRasterPos2f(x, y);
+    for (const char *c = string; *c != '\0'; c++) {
+        glutBitmapCharacter(font, *c);
+    }
+}
+
+void display(void) {
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // Draw 16 boxes horizontally
+    float boxWidth = 1.8f / TAPE_SIZE;  // From -0.9 to +0.9 in x-axis
+    float boxHeight = 0.5f;
+
+    for (int i = 0; i < TAPE_SIZE; i++) {
+        uint8_t instr = tape[i];
+        uint8_t opcode = instr >> 4;
+        uint8_t arg = instr & 0x0F;
+
+        // Choose color based on opcode (simple hue shift)
+        float hue = opcode / 16.0f;
+        float r = hue, g = 1.0f - hue, b = 0.5f;
+
+        glColor3f(r, g, b);
+
+        float x_start = -0.9f + i * boxWidth;
+        float y_start = 0.0f;
+
+        // Draw rectangle
+        glBegin(GL_QUADS);
+        glVertex2f(x_start, y_start);
+        glVertex2f(x_start + boxWidth - 0.01f, y_start);
+        glVertex2f(x_start + boxWidth - 0.01f, y_start + boxHeight);
+        glVertex2f(x_start, y_start + boxHeight);
+        glEnd();
+
+        // Draw hex value inside the box (black text)
+        glColor3f(0, 0, 0);
+        char hexstr[5];
+        snprintf(hexstr, sizeof(hexstr), "%02X", instr);
+        RenderBitmapString(x_start + boxWidth / 5, y_start + boxHeight / 2 + 0.05f, GLUT_BITMAP_HELVETICA_18, hexstr);
+
+        // Draw mnemonic below box
+        if (opcode < 16) {
+            RenderBitmapString(x_start + boxWidth / 20, y_start - 0.1f, GLUT_BITMAP_HELVETICA_12, mnemonics[opcode]);
+        }
+    }
+
+    glutSwapBuffers();
+}
+
+void reshape(int w, int h) {
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    // Orthographic projection, x from -1 to 1, y from -1 to 1
+    gluOrtho2D(-1, 1, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+}
+
+
+
+void LoadRandomBytecode(BFFInterpreter *interpreter, uint64_t *arr, int index1, int index2) {
+    memcpy(interpreter->tape, &arr[index1], 8);
+    memcpy(interpreter->tape + 8, &arr[index2], 8);
+}
+
+void RunInterpreter(BFFInterpreter *interpreter) {
+    while (!interpreter->halted && interpreter->ip < TAPE_SIZE) {
+        uint8_t instr = interpreter->tape[interpreter->ip++];
+        uint8_t opcode = instr >> 4;
+        uint8_t arg = instr & 0x0F;
+
+        switch (opcode) {
+            case 0x0: /* NOP */ break;
+            case 0x1:  // INC x
+                interpreter->data[arg]++;
+                break;
+            case 0x2:  // DEC x
+                interpreter->data[arg]--;
+                break;
+            case 0x3:  // MOVR x
+                interpreter->dp = (interpreter->dp + arg) % DATA_SIZE;
+                break;
+            case 0x4:  // MOVL x
+                interpreter->dp = (interpreter->dp - arg + DATA_SIZE) % DATA_SIZE;
+                break;
+            case 0x5:  // ADD x
+                interpreter->data[interpreter->dp] += interpreter->data[arg];
+                break;
+            case 0x6:  // SUB x
+                interpreter->data[interpreter->dp] -= interpreter->data[arg];
+                break;
+            case 0x7:  // JZ x
+                if (interpreter->data[interpreter->dp] == 0)
+                    interpreter->ip = (interpreter->ip + arg) % TAPE_SIZE;
+                break;
+            case 0x8:  // JNZ x
+                if (interpreter->data[interpreter->dp] != 0)
+                    interpreter->ip = (interpreter->ip - arg + TAPE_SIZE) % TAPE_SIZE;
+                break;
+            case 0x9:  // OUT x
+                putchar(interpreter->data[arg]);
+                break;
+            case 0xA:  // IN x
+                interpreter->data[arg] = getchar();
+                break;
+            case 0xB:  // RND x
+                interpreter->data[arg] = xorshift64() & 0xFF;
+                break;
+            case 0xC:  // CLR x
+                interpreter->data[arg] = 0;
+                break;
+            case 0xD:  // SWP x
+                {
+                    uint8_t tmp = interpreter->data[arg];
+                    interpreter->data[arg] = interpreter->data[interpreter->dp];
+                    interpreter->data[interpreter->dp] = tmp;
+                }
+                break;
+            case 0xE:  // CPY x
+                interpreter->data[arg] = interpreter->data[interpreter->dp];
+                break;
+            case 0xF:  // HALT
+                interpreter->halted = 1;
+                break;
+            default:
+                fprintf(stderr, "Unknown opcode: %x\n", opcode);
+                interpreter->halted = 1;
+                break;
+        }
+    }
+}
+
+void DisassembleTape(const uint8_t *tape, size_t len) {
+    const char *mnemonics[16] = {
+        "NOP", "INC", "DEC", "MOVR", "MOVL", "ADD", "SUB", "JZ",
+        "JNZ", "OUT", "IN", "RND", "CLR", "SWP", "CPY", "HALT"
+    };
+
+    printf("=== Bytecode Disassembly ===\n");
+    for (size_t i = 0; i < len; i++) {
+        uint8_t instr = tape[i];
+        uint8_t opcode = instr >> 4;
+        uint8_t arg = instr & 0x0F;
+
+        if (opcode < 16) {
+            printf("0x%02X: %-4s %d\n", instr, mnemonics[opcode], arg);
+        } else {
+            printf("0x%02X: ???\n", instr);  // Unknown opcode
+        }
+    }
+    printf("============================\n");
+}
+
+
+int main() {
+    BFFInterpreter interpreter = {0};
+    uint64_t programs[N_PROGRAMS];
+    GenerateRandomData(programs, N_PROGRAMS, time(NULL));
+
+    // Optional: manually insert a tiny program
+    interpreter.tape[0] = 0x11; // INC 1
+    interpreter.tape[1] = 0x11; // INC 1
+    interpreter.tape[2] = 0x91; // OUT 1
+    interpreter.tape[3] = 0xF0; // HALT
+
+    RunInterpreter(&interpreter);
+    DisassembleTape(interpreter.tape, TAPE_SIZE);
+    printf("Memory dump:\n");
+    for (int i = 0; i < 16; i++) {
+        printf("Cell[%02d] = %02x\n", i, interpreter.data[i]);
+    }
+    return 0;
+}

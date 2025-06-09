@@ -1,0 +1,147 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+
+#define N_PROGRAMS 1000
+#define TAPE_SIZE 16
+#define DATA_SIZE 16
+
+uint64_t state64 = 0xDEADBEEFDEADBEEFull;
+
+typedef struct {
+    uint8_t tape[TAPE_SIZE];     // Bytecode instructions
+    uint8_t data[DATA_SIZE];     // Data memory
+    uint8_t dp;                  // Data pointer (0–15)
+    uint8_t ip;                  // Instruction pointer (0–15)
+    int halted;                  // Flag to stop execution
+} BFFInterpreter;
+
+uint64_t xorshift64() {
+    state64 ^= state64 >> 12;
+    state64 ^= state64 << 25;
+    state64 ^= state64 >> 27;
+    return state64 * 2685821657736338717ull;
+}
+
+void GenerateRandomData(uint64_t *arr, int count, uint64_t seed) {
+    state64 = seed;
+    for (int i = 0; i < count; i++) {
+        arr[i] = xorshift64();
+    }
+}
+
+void LoadRandomBytecode(BFFInterpreter *interpreter, uint64_t *arr, int index1, int index2) {
+    memcpy(interpreter->tape, &arr[index1], 8);
+    memcpy(interpreter->tape + 8, &arr[index2], 8);
+}
+
+void RunInterpreter(BFFInterpreter *interpreter) {
+    while (!interpreter->halted && interpreter->ip < TAPE_SIZE) {
+        uint8_t instr = interpreter->tape[interpreter->ip++];
+        uint8_t opcode = instr >> 4;
+        uint8_t arg = instr & 0x0F;
+
+        switch (opcode) {
+            case 0x0: /* NOP */ break;
+            case 0x1:  // INC x
+                interpreter->data[arg]++;
+                break;
+            case 0x2:  // DEC x
+                interpreter->data[arg]--;
+                break;
+            case 0x3:  // MOVR x
+                interpreter->dp = (interpreter->dp + arg) % DATA_SIZE;
+                break;
+            case 0x4:  // MOVL x
+                interpreter->dp = (interpreter->dp - arg + DATA_SIZE) % DATA_SIZE;
+                break;
+            case 0x5:  // ADD x
+                interpreter->data[interpreter->dp] += interpreter->data[arg];
+                break;
+            case 0x6:  // SUB x
+                interpreter->data[interpreter->dp] -= interpreter->data[arg];
+                break;
+            case 0x7:  // JZ x
+                if (interpreter->data[interpreter->dp] == 0)
+                    interpreter->ip = (interpreter->ip + arg) % TAPE_SIZE;
+                break;
+            case 0x8:  // JNZ x
+                if (interpreter->data[interpreter->dp] != 0)
+                    interpreter->ip = (interpreter->ip - arg + TAPE_SIZE) % TAPE_SIZE;
+                break;
+            case 0x9:  // OUT x
+                putchar(interpreter->data[arg]);
+                break;
+            case 0xA:  // IN x
+                interpreter->data[arg] = getchar();
+                break;
+            case 0xB:  // RND x
+                interpreter->data[arg] = xorshift64() & 0xFF;
+                break;
+            case 0xC:  // CLR x
+                interpreter->data[arg] = 0;
+                break;
+            case 0xD:  // SWP x
+                {
+                    uint8_t tmp = interpreter->data[arg];
+                    interpreter->data[arg] = interpreter->data[interpreter->dp];
+                    interpreter->data[interpreter->dp] = tmp;
+                }
+                break;
+            case 0xE:  // CPY x
+                interpreter->data[arg] = interpreter->data[interpreter->dp];
+                break;
+            case 0xF:  // HALT
+                interpreter->halted = 1;
+                break;
+            default:
+                fprintf(stderr, "Unknown opcode: %x\n", opcode);
+                interpreter->halted = 1;
+                break;
+        }
+    }
+}
+
+void DisassembleTape(const uint8_t *tape, size_t len) {
+    const char *mnemonics[16] = {
+        "NOP", "INC", "DEC", "MOVR", "MOVL", "ADD", "SUB", "JZ",
+        "JNZ", "OUT", "IN", "RND", "CLR", "SWP", "CPY", "HALT"
+    };
+
+    printf("=== Bytecode Disassembly ===\n");
+    for (size_t i = 0; i < len; i++) {
+        uint8_t instr = tape[i];
+        uint8_t opcode = instr >> 4;
+        uint8_t arg = instr & 0x0F;
+
+        if (opcode < 16) {
+            printf("0x%02X: %-4s %d\n", instr, mnemonics[opcode], arg);
+        } else {
+            printf("0x%02X: ???\n", instr);  // Unknown opcode
+        }
+    }
+    printf("============================\n");
+}
+
+
+int main() {
+    BFFInterpreter interpreter = {0};
+    uint64_t programs[N_PROGRAMS];
+    GenerateRandomData(programs, N_PROGRAMS, time(NULL));
+
+    // Optional: manually insert a tiny program
+    interpreter.tape[0] = 0x11; // INC 1
+    interpreter.tape[1] = 0x11; // INC 1
+    interpreter.tape[2] = 0x91; // OUT 1
+    interpreter.tape[3] = 0xF0; // HALT
+
+    RunInterpreter(&interpreter);
+    DisassembleTape(interpreter.tape, TAPE_SIZE);
+    printf("Memory dump:\n");
+    for (int i = 0; i < 16; i++) {
+        printf("Cell[%02d] = %02x\n", i, interpreter.data[i]);
+    }
+    return 0;
+}
