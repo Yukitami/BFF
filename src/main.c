@@ -54,17 +54,17 @@ void RenderBitmapString(float x, float y, void *font, const char *string) {
 }
 
 uint8_t GetMemoryAt(BFFInterpreter *interpreter, int index) {
-    index = xorshift64() % MEM_FULL; // Randomize index for non-deterministic behavior
-    if (index < 0 || index >= MEM_FULL) return 0; // Ensure index is within bounds
+    //index = xorshift64() % MEM_FULL; // Randomize index for non-deterministic behavior
+    //if (index < 0 || index >= MEM_FULL) return 0; // Ensure index is within bounds
     if (index < MEM_HALF) return interpreter->tape1[index];
     return interpreter->tape2[index - MEM_HALF];
 }
 
 void SetMemoryAt(BFFInterpreter *interpreter, int index, uint8_t value) {
-    index = xorshift64() % MEM_FULL; // Randomize index for non-deterministic behavior
-    if (index < 0 || index >= MEM_FULL) return; // Ensure index is within bounds
-    if (value > 255) value = 255; // Clamp value to 8-bit range
-    if (value < 0) value = 0; // Ensure value is non-negative
+    //index = xorshift64() % MEM_FULL; // Randomize index for non-deterministic behavior
+    //if (index < 0 || index >= MEM_FULL) return; // Ensure index is within bounds
+    //if (value > 255) value = 255; // Clamp value to 8-bit range
+    //if (value < 0) value = 0; // Ensure value is non-negative
     if (index < MEM_HALF) interpreter->tape1[index] = value;
     else interpreter->tape2[index - MEM_HALF] = value;
 }
@@ -78,7 +78,8 @@ void StepInterpreter(BFFInterpreter *interpreter) {
 
     uint8_t opcode = instr >> 4;
     uint8_t arg = instr & 0x0F;
-
+    
+    
     switch (opcode) {
         case 0x0: break; // NOP
         case 0x1: SetMemoryAt(interpreter, arg, GetMemoryAt(interpreter, arg) + 1); break;
@@ -95,7 +96,7 @@ void StepInterpreter(BFFInterpreter *interpreter) {
         //case 0xC: putchar(interpreter->mem[arg]); break;
         //case 0xD: putchar(interpreter->mem[arg]); break;
         //case 0xE: putchar(interpreter->mem[arg]); break;
-        //case 0xF: interpreter->halted = 1; break; // HALT
+        case 0xF: interpreter->halted = 1; break; // HALT
         default: break;;
     }
 }
@@ -138,13 +139,12 @@ void display(void) {
 }
 
 void timer(int value) {
-    for (int i = 0; i < N_TAPES; i++) {
-        if (tapes[i].running && !tapes[i].halted) {
-            StepInterpreter(&tapes[i]);
+    for (int i = 0; i < N_TAPES / 2; i++) {  // run fewer interpreters per cycle
+        int index = xorshift64() % N_TAPES;
+        if (tapes[index].running && !tapes[index].halted) {
+            StepInterpreter(&tapes[index]);
         }
     }
-    glutPostRedisplay();
-    glutTimerFunc(500, timer, 0);
 }
 
 void keyboard(unsigned char key, int x, int y) {
@@ -184,7 +184,8 @@ int main(int argc, char **argv) {
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
     glutKeyboardFunc(keyboard);
-    glutTimerFunc(500, timer, 0);
+    glutPostRedisplay();    
+    glutTimerFunc(100, timer, 0);
     glClearColor(0.1f, 0.1f, 0.1f, 1);
     glutMainLoop();
     return 0;
