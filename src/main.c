@@ -5,26 +5,23 @@
 #include <time.h>
 #include <GL/glut.h>
 
-#define N_PROGRAMS 1000
-#define MEM_SIZE 2048
+#define MEM_HALF 64
+#define MEM_FULL 128
+#define N_TAPES 128
 
 uint64_t state64 = 0xDEADBEEFCAFEBABE;
 
 typedef struct {
-    uint8_t mem[MEM_SIZE];     // Bytecode instructions
-    //uint8_t data[DATA_SIZE];     // Data memory
-    uint8_t dp;                  // Data pointer
-    uint8_t ip;                  // Instruction pointer
+    uint8_t tape1[MEM_HALF];
+    uint8_t tape2[MEM_HALF];
+    uint8_t dp;
+    uint8_t ip;
     int halted;
-    int running;                 // Live execution toggle
+    int running;
 } BFFInterpreter;
 
-BFFInterpreter interpreter;
-
-const char *mnemonics[16] = {
-    "NOP", "INC", "DEC", "MOVR", "MOVL", "ADD", "SUB", "JZ",
-    "JNZ", "OUT", "IN", "RND", "CLR", "SWP", "CPY", "HALT"
-};
+BFFInterpreter tapes[N_TAPES];
+int current_tape = 0;
 
 uint8_t xorshift64() {
     state64 ^= state64 >> 12;
@@ -32,16 +29,20 @@ uint8_t xorshift64() {
     state64 ^= state64 >> 27;
     return (uint8_t)((state64 * 268) & 0xFF);
 }
+
 void SeedRandom() {
     uint64_t seed = ((uint64_t)rand() << 32) | rand();
     state64 = seed;
 }
 
 void FillTapeWithRandomInstructions(BFFInterpreter *interpreter) {
-    for (int i = 0; i < MEM_SIZE; i++) {
+    for (int i = 0; i < MEM_HALF; i++) {
         uint8_t opcode = xorshift64() % 16;
-        uint8_t arg    = xorshift64() % 16;
-        interpreter->mem[i] = (opcode << 4) | arg;
+        uint8_t arg = xorshift64() % MEM_HALF;
+        interpreter->tape1[i] = (opcode << 4) | arg;
+        opcode = xorshift64() % 16;
+        arg = xorshift64() % MEM_HALF;
+        interpreter->tape2[i] = (opcode << 4) | arg;
     }
 }
 
@@ -52,88 +53,56 @@ void RenderBitmapString(float x, float y, void *font, const char *string) {
     }
 }
 
-void StepInterpreter(BFFInterpreter *interpreter) {
-    if (interpreter->halted || interpreter->ip >= MEM_SIZE) return;
+uint8_t GetMemoryAt(BFFInterpreter *interpreter, int index) {
+    if (index < MEM_HALF) return interpreter->tape1[index];
+    return interpreter->tape2[index - MEM_HALF];
+}
 
-    //uint8_t instr = interpreter->mem[interpreter->ip++];
-    uint8_t instr = interpreter->mem[interpreter->ip];
-    interpreter->ip = (interpreter->ip + 1) % MEM_SIZE;
-    
+void SetMemoryAt(BFFInterpreter *interpreter, int index, uint8_t value) {
+    if (index < MEM_HALF) interpreter->tape1[index] = value;
+    else interpreter->tape2[index - MEM_HALF] = value;
+}
+
+void StepInterpreter(BFFInterpreter *interpreter) {
+    if (interpreter->halted || interpreter->ip >= MEM_FULL) return;
+
+    uint8_t instr = GetMemoryAt(interpreter, interpreter->ip);
+    interpreter->ip = (interpreter->ip + 1);
+    if (interpreter->ip >= MEM_FULL) interpreter->halted = 1; // end-of-program non-cylindrical behavior
+
     uint8_t opcode = instr >> 4;
     uint8_t arg = instr & 0x0F;
 
-        switch (opcode) {
-            case 0x0: /* NOP */ break;
-            case 0x1:  // INC x
-                interpreter->mem[arg]++;
-                break;
-            case 0x2:  // DEC x
-                interpreter->mem[arg]--;
-                break;
-            case 0x3:  // MOVR x
-                interpreter->dp = (interpreter->dp + arg) % MEM_SIZE;
-                break;
-            case 0x4:  // MOVL x
-                interpreter->dp = (interpreter->dp - arg + MEM_SIZE) % MEM_SIZE;
-                break;
-            case 0x5:  // ADD x
-                interpreter->mem[interpreter->dp] += interpreter->mem[arg];
-                break;
-            case 0x6:  // SUB x
-                interpreter->mem[interpreter->dp] -= interpreter->mem[arg];
-                break;
-            case 0x7:  // JZ x
-                if (interpreter->mem[interpreter->dp] == 0)
-                    interpreter->ip = (interpreter->ip + arg) % MEM_SIZE;
-                break;
-            case 0x8:  // JNZ x
-                if (interpreter->mem[interpreter->dp] != 0)
-                    interpreter->ip = (interpreter->ip - arg + MEM_SIZE) % MEM_SIZE;
-                break;
-            case 0x9:  // OUT x
-                putchar(interpreter->mem[arg]);
-                break;
-            case 0xA:  // IN x
-                interpreter->mem[arg] = getchar();
-                break;
-            case 0xB:  // RND x
-                interpreter->mem[arg] = xorshift64() & 0xFF;
-                break;
-            case 0xC:  // CLR x
-                interpreter->mem[arg] = 0;
-                break;
-            case 0xD:  // SWP x
-                {
-                    uint8_t tmp = interpreter->mem[arg];
-                    interpreter->mem[arg] = interpreter->mem[interpreter->dp];
-                    interpreter->mem[interpreter->dp] = tmp;
-                }
-                break;
-            case 0xE:  // CPY x
-                interpreter->mem[arg] = interpreter->mem[interpreter->dp];
-                break;
-            case 0xF:  // HALT
-                interpreter->halted = 1;
-                break;
-            default:
-                fprintf(stderr, "Unknown opcode: %x\n", opcode);
-                interpreter->halted = 1;
-                break;
-        }
-
+    switch (opcode) {
+        case 0x0: break; // NOP
+        case 0x1: SetMemoryAt(interpreter, arg, GetMemoryAt(interpreter, arg) + 1); break;
+        case 0x2: SetMemoryAt(interpreter, arg, GetMemoryAt(interpreter, arg) - 1); break;
+        case 0x3: interpreter->dp = (interpreter->dp + arg); if (interpreter->dp >= MEM_FULL) interpreter->dp = MEM_FULL - 1; break;
+        case 0x4: interpreter->dp = (interpreter->dp >= arg) ? (interpreter->dp - arg) : 0; break;
+        case 0x5: SetMemoryAt(interpreter, interpreter->dp, GetMemoryAt(interpreter, interpreter->dp) + GetMemoryAt(interpreter, arg)); break;
+        case 0x6: SetMemoryAt(interpreter, interpreter->dp, GetMemoryAt(interpreter, interpreter->dp) - GetMemoryAt(interpreter, arg)); break;
+        case 0x7: if (GetMemoryAt(interpreter, interpreter->dp) == 0 && interpreter->ip + arg < MEM_FULL) interpreter->ip += arg; break;
+        case 0x8: if (GetMemoryAt(interpreter, interpreter->dp) != 0 && interpreter->ip >= arg) interpreter->ip -= arg; break;
+        //case 0x9: putchar(interpreter->mem[arg]); break; // OUT
+        //case 0xA: putchar(interpreter->mem[arg]); break; // IN
+        //case 0xD: putchar(interpreter->mem[arg]); break;
+        //case 0xC: putchar(interpreter->mem[arg]); break;
+        //case 0xD: putchar(interpreter->mem[arg]); break;
+        //case 0xE: putchar(interpreter->mem[arg]); break;
+        //case 0xF: interpreter->halted = 1; break; // HALT
+        default: break;;
+    }
 }
 
-void DrawMemoryRow(const uint8_t *mem, int highlight_index, float y, const char *label) {
-    float boxWidth = 1.8f / MEM_SIZE;
-
-    for (int i = 0; i < MEM_SIZE; i++) {
+void DrawMemoryRow(const uint8_t *mem, int size, int highlight_index, float y, const char *label) {
+    float boxWidth = 1.8f / size;
+    for (int i = 0; i < size; i++) {
         if (i == highlight_index)
-            glColor3f(1.0f, 0.0f, 0.0f); // highlight: red
+            glColor3f(1.0f, 0.0f, 0.0f);
         else
-            glColor3f(0.4f, 0.7f, 1.0f); // normal: blue
+            glColor3f(0.4f, 0.7f, 1.0f);
 
         float x = -0.9f + i * boxWidth;
-
         glBegin(GL_QUADS);
         glVertex2f(x, y);
         glVertex2f(x + boxWidth - 0.01f, y);
@@ -146,36 +115,43 @@ void DrawMemoryRow(const uint8_t *mem, int highlight_index, float y, const char 
         snprintf(labelText, sizeof(labelText), "%02X", mem[i]);
         RenderBitmapString(x + 0.01f, y + 0.07f, GLUT_BITMAP_HELVETICA_12, labelText);
     }
-
-    // Label
     glColor3f(1, 1, 1);
     RenderBitmapString(-0.95f, y + 0.25f, GLUT_BITMAP_HELVETICA_12, label);
 }
 
 void display(void) {
     glClear(GL_COLOR_BUFFER_BIT);
-
-    DrawMemoryRow(interpreter.mem, interpreter.ip, 0.4f, "Tape");
-    DrawMemoryRow(interpreter.mem, interpreter.dp, 0.1f, "Data");
-
+    BFFInterpreter *interpreter = &tapes[current_tape];
+    DrawMemoryRow(interpreter->tape1, MEM_HALF, interpreter->ip < MEM_HALF ? interpreter->ip : -1, 0.4f, "Tape1");
+    DrawMemoryRow(interpreter->tape2, MEM_HALF, interpreter->ip >= MEM_HALF ? interpreter->ip - MEM_HALF : -1, 0.1f, "Tape2");
+    char label[32];
+    snprintf(label, sizeof(label), "Tape #%d", current_tape);
+    glColor3f(1, 1, 1);
+    RenderBitmapString(-0.2f, 0.8f, GLUT_BITMAP_HELVETICA_18, label);
     glutSwapBuffers();
 }
 
 void timer(int value) {
-    if (interpreter.running && !interpreter.halted)
-        StepInterpreter(&interpreter);
-
+    for (int i = 0; i < N_TAPES; i++) {
+        if (tapes[i].running && !tapes[i].halted) {
+            StepInterpreter(&tapes[i]);
+        }
+    }
     glutPostRedisplay();
-    glutTimerFunc(500, timer, 0); // call every 500ms
+    glutTimerFunc(500, timer, 0);
 }
 
 void keyboard(unsigned char key, int x, int y) {
     if (key == ' ') {
-        interpreter.running = !interpreter.running;
+        tapes[current_tape].running = !tapes[current_tape].running;
     } else if (key == 's') {
-        StepInterpreter(&interpreter);
+        StepInterpreter(&tapes[current_tape]);
+    } else if (key == 'n') {
+        current_tape = (current_tape + 1) % N_TAPES;
+    } else if (key == 'p') {
+        current_tape = (current_tape - 1 + N_TAPES) % N_TAPES;
     } else if (key == 27) {
-        exit(0); // ESC key
+        exit(0);
     }
     glutPostRedisplay();
 }
@@ -189,35 +165,21 @@ void reshape(int w, int h) {
 }
 
 int main(int argc, char **argv) {
-     srand(time(NULL));
-     SeedRandom();
-    //uint64_t programs[N_PROGRAMS];
-    //uint64_t programs[N_PROGRAMS];
-    //GenerateRandomData(programs, N_PROGRAMS, time(NULL));
-
-    memset(&interpreter, 0, sizeof(interpreter));
-    //GenerateRandomData(interpreter.tape, TAPE_SIZE, time(NULL));
-    //GenerateRandomData(interpreter.data, DATA_SIZE, time(NULL));
-    
-    FillTapeWithRandomInstructions(&interpreter);
-    // interpreter.tape[0] = 0x11; // INC 1
-     //interpreter.tape[1] = 0x11; // INC 1
-    // interpreter.tape[2] = 0x91; // OUT 1
-    // interpreter.tape[3] = 0xF0; // HALT
-
-    // GLUT setup
+    srand(time(NULL));
+    SeedRandom();
+    for (int i = 0; i < N_TAPES; i++) {
+        memset(&tapes[i], 0, sizeof(BFFInterpreter));
+        FillTapeWithRandomInstructions(&tapes[i]);
+    }
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
     glutInitWindowSize(1600, 800);
-    glutCreateWindow("BFF Interpreter Visualizer");
-
+    glutCreateWindow("BFF Dual-Tape Interpreter Visualizer");
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
     glutKeyboardFunc(keyboard);
-    glutTimerFunc(500, timer, 0); // First call in 500ms
-
+    glutTimerFunc(500, timer, 0);
     glClearColor(0.1f, 0.1f, 0.1f, 1);
-
     glutMainLoop();
     return 0;
 }

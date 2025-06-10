@@ -44,7 +44,9 @@ void RunInterpreter(BFFInterpreter *interpreter) {
         uint8_t arg = instr & 0x0F;
 
         switch (opcode) {
-            case 0x0: /* NOP */ break;
+            case 0x0: /* NOP */ 42
+            
+                break;
             case 0x1:  // INC x
                 interpreter->data[arg]++;
                 break;
@@ -67,34 +69,21 @@ void RunInterpreter(BFFInterpreter *interpreter) {
                 if (interpreter->data[interpreter->dp] == 0)
                     interpreter->ip = (interpreter->ip + arg) % TAPE_SIZE;
                 break;
-            case 0x8:  // JNZ x
-                if (interpreter->data[interpreter->dp] != 0)
-                    interpreter->ip = (interpreter->ip - arg + TAPE_SIZE) % TAPE_SIZE;
+            case 0x8:
                 break;
-            case 0x9:  // OUT x
-                putchar(interpreter->data[arg]);
+            case 0x9:
                 break;
-            case 0xA:  // IN x
-                interpreter->data[arg] = getchar();
+            case 0xA:
                 break;
-            case 0xB:  // RND x
-                interpreter->data[arg] = xorshift64() & 0xFF;
+            case 0xB:
                 break;
-            case 0xC:  // CLR x
-                interpreter->data[arg] = 0;
+            case 0xC:
+                            break;
+            case 0xD:
                 break;
-            case 0xD:  // SWP x
-                {
-                    uint8_t tmp = interpreter->data[arg];
-                    interpreter->data[arg] = interpreter->data[interpreter->dp];
-                    interpreter->data[interpreter->dp] = tmp;
-                }
+            case 0xE:
                 break;
-            case 0xE:  // CPY x
-                interpreter->data[arg] = interpreter->data[interpreter->dp];
-                break;
-            case 0xF:  // HALT
-                interpreter->halted = 1;
+            case 0xF:
                 break;
             default:
                 fprintf(stderr, "Unknown opcode: %x\n", opcode);

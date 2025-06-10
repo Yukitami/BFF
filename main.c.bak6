@@ -1,0 +1,185 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include <GL/glut.h>
+
+#define MEM_SIZE 32
+#define FULL_MEM_SIZE (MEM_SIZE * 2)
+#define N_TAPES 128
+
+uint64_t state64 = 0xDEADBEEFCAFEBABE;
+
+uint8_t xorshift64() {
+    state64 ^= state64 >> 12;
+    state64 ^= state64 << 25;
+    state64 ^= state64 >> 27;
+    return (uint8_t)((state64 * 268) & 0xFF);
+}
+
+void SeedRandom() {
+    uint64_t seed = ((uint64_t)rand() << 32) | rand();
+    state64 = seed;
+}
+
+typedef struct {
+    uint8_t tape1[MEM_SIZE];
+    uint8_t tape2[MEM_SIZE];
+    uint8_t dp;
+    uint8_t ip;
+    int halted;
+    int running;
+} BFFInterpreter;
+
+BFFInterpreter tapes[N_TAPES];
+int current_tape = 0;
+
+void FillTapeWithRandomInstructions(BFFInterpreter *interpreter) {
+    for (int i = 0; i < MEM_SIZE; i++) {
+        uint8_t opcode = xorshift64() % 16;
+        uint8_t arg = xorshift64() % FULL_MEM_SIZE;
+        interpreter->tape1[i] = (opcode << 4) | (arg & 0x0F);
+        opcode = xorshift64() % 16;
+        arg = xorshift64() % FULL_MEM_SIZE;
+        interpreter->tape2[i] = (opcode << 4) | (arg & 0x0F);
+    }
+}
+
+void StepInterpreter(BFFInterpreter *interpreter) {
+    if (interpreter->halted || interpreter->ip >= FULL_MEM_SIZE) return;
+
+    uint8_t full_mem[FULL_MEM_SIZE];
+    memcpy(full_mem, interpreter->tape1, MEM_SIZE);
+    memcpy(full_mem + MEM_SIZE, interpreter->tape2, MEM_SIZE);
+
+    uint8_t instr = full_mem[interpreter->ip];
+    uint8_t opcode = instr >> 4;
+    uint8_t arg = instr & 0x0F;
+
+    interpreter->ip = (interpreter->ip + 1) % FULL_MEM_SIZE;
+
+    switch (opcode) {
+        case 0x0:  full_mem[arg]++; break;
+        case 0x1:  full_mem[arg]--; break;
+        case 0x2:  interpreter->dp = (interpreter->dp + arg) % FULL_MEM_SIZE; break;
+        case 0x3:  interpreter->dp = (interpreter->dp - arg + FULL_MEM_SIZE) % FULL_MEM_SIZE; break;
+        case 0x4:  full_mem[interpreter->dp] += full_mem[arg]; break;
+        case 0x5:  full_mem[interpreter->dp] -= full_mem[arg]; break;
+        case 0x6:  if (full_mem[interpreter->dp] == 0) interpreter->ip = (interpreter->ip + arg) % FULL_MEM_SIZE; break;
+        case 0x7:  if (full_mem[interpreter->dp] != 0) interpreter->ip = (interpreter->ip - arg + FULL_MEM_SIZE) % FULL_MEM_SIZE; break;
+        case 0xF:  interpreter->halted = 1; break;
+        default: break;
+    }
+
+    memcpy(interpreter->tape1, full_mem, MEM_SIZE);
+    memcpy(interpreter->tape2, full_mem + MEM_SIZE, MEM_SIZE);
+}
+
+void RenderBitmapString(float x, float y, void *font, const char *string) {
+    glRasterPos2f(x, y);
+    for (const char *c = string; *c != '\0'; c++) {
+        glutBitmapCharacter(font, *c);
+    }
+}
+
+void DrawMemoryRow(const uint8_t *mem, int highlight_index, float y, const char *label) {
+    float boxWidth = 1.8f / FULL_MEM_SIZE;
+    for (int i = 0; i < FULL_MEM_SIZE; i++) {
+        if (i == highlight_index)
+            glColor3f(1.0f, 0.0f, 0.0f);
+        else
+            glColor3f(0.4f, 0.7f, 1.0f);
+
+        float x = -0.9f + i * boxWidth;
+
+        glBegin(GL_QUADS);
+        glVertex2f(x, y);
+        glVertex2f(x + boxWidth - 0.01f, y);
+        glVertex2f(x + boxWidth - 0.01f, y + 0.2f);
+        glVertex2f(x, y + 0.2f);
+        glEnd();
+
+        glColor3f(0, 0, 0);
+        char labelText[6];
+        snprintf(labelText, sizeof(labelText), "%02X", mem[i]);
+        RenderBitmapString(x + 0.01f, y + 0.07f, GLUT_BITMAP_HELVETICA_12, labelText);
+    }
+    glColor3f(1, 1, 1);
+    RenderBitmapString(-0.95f, y + 0.25f, GLUT_BITMAP_HELVETICA_12, label);
+}
+
+void display(void) {
+    glClear(GL_COLOR_BUFFER_BIT);
+    BFFInterpreter *interpreter = &tapes[current_tape];
+    uint8_t combined[FULL_MEM_SIZE];
+    memcpy(combined, interpreter->tape1, MEM_SIZE);
+    memcpy(combined + MEM_SIZE, interpreter->tape2, MEM_SIZE);
+
+    DrawMemoryRow(combined, interpreter->ip, 0.4f, "Tape");
+    DrawMemoryRow(combined, interpreter->dp, 0.1f, "Data");
+
+    char label[32];
+    snprintf(label, sizeof(label), "Tape #%d", current_tape);
+    glColor3f(1, 1, 1);
+    RenderBitmapString(-0.2f, 0.8f, GLUT_BITMAP_HELVETICA_18, label);
+
+    glutSwapBuffers();
+}
+
+void timer(int value) {
+    for (int i = 0; i < N_TAPES; i++) {
+        if (tapes[i].running && !tapes[i].halted) {
+            StepInterpreter(&tapes[i]);
+        }
+    }
+    glutPostRedisplay();
+    glutTimerFunc(100, timer, 0);
+}
+
+void keyboard(unsigned char key, int x, int y) {
+    if (key == ' ') {
+        tapes[current_tape].running = !tapes[current_tape].running;
+    } else if (key == 's') {
+        StepInterpreter(&tapes[current_tape]);
+    } else if (key == 'n') {
+        current_tape = (current_tape + 1) % N_TAPES;
+    } else if (key == 'p') {
+        current_tape = (current_tape - 1 + N_TAPES) % N_TAPES;
+    } else if (key == 27) {
+        exit(0);
+    }
+    glutPostRedisplay();
+}
+
+void reshape(int w, int h) {
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluOrtho2D(-1, 1, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+}
+
+int main(int argc, char **argv) {
+    srand(time(NULL));
+    SeedRandom();
+
+    for (int i = 0; i < N_TAPES; i++) {
+        memset(&tapes[i], 0, sizeof(BFFInterpreter));
+        FillTapeWithRandomInstructions(&tapes[i]);
+    }
+
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
+    glutInitWindowSize(1600, 800);
+    glutCreateWindow("BFF Dual-Tape Interpreter");
+
+    glutDisplayFunc(display);
+    glutReshapeFunc(reshape);
+    glutKeyboardFunc(keyboard);
+    glutTimerFunc(100, timer, 0);
+    glClearColor(0.1f, 0.1f, 0.1f, 1);
+
+    glutMainLoop();
+    return 0;
+}
