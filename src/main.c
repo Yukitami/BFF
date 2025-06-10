@@ -54,11 +54,17 @@ void RenderBitmapString(float x, float y, void *font, const char *string) {
 }
 
 uint8_t GetMemoryAt(BFFInterpreter *interpreter, int index) {
+    index = xorshift64() % MEM_FULL; // Randomize index for non-deterministic behavior
+    if (index < 0 || index >= MEM_FULL) return 0; // Ensure index is within bounds
     if (index < MEM_HALF) return interpreter->tape1[index];
     return interpreter->tape2[index - MEM_HALF];
 }
 
 void SetMemoryAt(BFFInterpreter *interpreter, int index, uint8_t value) {
+    index = xorshift64() % MEM_FULL; // Randomize index for non-deterministic behavior
+    if (index < 0 || index >= MEM_FULL) return; // Ensure index is within bounds
+    if (value > 255) value = 255; // Clamp value to 8-bit range
+    if (value < 0) value = 0; // Ensure value is non-negative
     if (index < MEM_HALF) interpreter->tape1[index] = value;
     else interpreter->tape2[index - MEM_HALF] = value;
 }
