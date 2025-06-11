@@ -18,11 +18,13 @@ typedef struct {
     uint8_t ip;
     int halted;
     int running;
+    int step_count;
 } BFFInterpreter;
 
 BFFInterpreter tapes[N_TAPES];
-int current_tape = 0;
 
+int current_tape = 0;
+int auto_cycle = 1;
 uint8_t xorshift64() {
     state64 ^= state64 >> 12;
     state64 ^= state64 << 25;
@@ -71,7 +73,10 @@ void SetMemoryAt(BFFInterpreter *interpreter, int index, uint8_t value) {
 
 void StepInterpreter(BFFInterpreter *interpreter) {
     if (interpreter->halted || interpreter->ip >= MEM_FULL) return;
-
+    if (interpreter->step_count++ > 100) {
+        interpreter->halted = 1;
+        return;
+    }
     uint8_t instr = GetMemoryAt(interpreter, interpreter->ip);
     interpreter->ip = (interpreter->ip + 1);
     if (interpreter->ip >= MEM_FULL) interpreter->halted = 1; // end-of-program non-cylindrical behavior
@@ -139,12 +144,22 @@ void display(void) {
 }
 
 void timer(int value) {
-    for (int i = 0; i < N_TAPES / 2; i++) {  // run fewer interpreters per cycle
-        int index = xorshift64() % N_TAPES;
-        if (tapes[index].running && !tapes[index].halted) {
-            StepInterpreter(&tapes[index]);
-        }
+    BFFInterpreter *interpreter = &tapes[current_tape];
+
+    // Step the current interpreter if it's running and not halted
+    if (interpreter->running && !interpreter->halted) {
+        StepInterpreter(interpreter);
     }
+
+    if (auto_cycle && (!interpreter->running || interpreter->halted)) {
+    current_tape = (current_tape + 1) % N_TAPES;
+
+    if (!tapes[current_tape].halted)
+        tapes[current_tape].running = 1;
+    }
+
+    glutPostRedisplay();
+    glutTimerFunc(10, timer, 0); // repeat timer
 }
 
 void keyboard(unsigned char key, int x, int y) {
@@ -158,6 +173,9 @@ void keyboard(unsigned char key, int x, int y) {
         current_tape = (current_tape - 1 + N_TAPES) % N_TAPES;
     } else if (key == 27) {
         exit(0);
+    }else if (key == 'c') {
+    auto_cycle = !auto_cycle;
+    printf("Auto-cycle %s\n", auto_cycle ? "enabled" : "disabled");
     }
     glutPostRedisplay();
 }
@@ -176,6 +194,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < N_TAPES; i++) {
         memset(&tapes[i], 0, sizeof(BFFInterpreter));
         FillTapeWithRandomInstructions(&tapes[i]);
+        tapes[i].step_count = 0;
     }
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
@@ -185,7 +204,7 @@ int main(int argc, char **argv) {
     glutReshapeFunc(reshape);
     glutKeyboardFunc(keyboard);
     glutPostRedisplay();    
-    glutTimerFunc(100, timer, 0);
+    glutTimerFunc(10, timer, 0);
     glClearColor(0.1f, 0.1f, 0.1f, 1);
     glutMainLoop();
     return 0;
